@@ -17,11 +17,12 @@
 // something other than what the event said. A built-in agent starts the program it finds, not the one its rules name,
 // so a wrapper that sends Claude Code to another service is never run. A service tier the rules name for Codex never
 // reaches its command line, so the run takes whatever tier the machine's own Codex config has that day. A program
-// missing for a moment, as while an update reinstalls it, stays missing until the worker restarts. A program a terminal
+// missing for a moment, as while an update reinstalls it, stays missing until the worker restarts; one an update
+// deletes after it was found keeps being started from a folder that no longer has it. A program a terminal
 // finds only because ~/.zshrc or ~/.bashrc puts its folder on PATH is missing for a worker launchd or systemd started.
 // Claude at its usage limit doesn't say when it resets, so the hub keeps handing it rounds that fail within seconds.
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setup } from "./helpers.ts";
@@ -31,8 +32,11 @@ process.env.PATH = `/nonexistent:${process.env.PATH}`;
 const { findProgram } = await import("../worker/agents.ts");
 // Command construction must also run on CI machines without Codex installed.
 const shell = process.env.SHELL;
-const lookup = join(setup("adapters"), "lookup.sh");
-writeFileSync(lookup, '#!/bin/sh\nprintf "%s\\n" /test/codex\n', { mode: 0o755 });
+const folder = setup("adapters");
+const program = join(folder, "codex");
+writeFileSync(program, "", { mode: 0o755 });
+const lookup = join(folder, "lookup.sh");
+writeFileSync(lookup, `#!/bin/sh\nprintf "%s\\n" '${program}'\n`, { mode: 0o755 });
 process.env.SHELL = lookup;
 findProgram("codex");
 if (shell === undefined) delete process.env.SHELL;
@@ -447,6 +451,25 @@ test("a program missing at one lookup is found at the next once it's back", () =
   assert.equal(
     findProgram("reinstalled-agent", () => [program]),
     program,
+  );
+});
+
+test("a program an update moved is looked up again", () => {
+  const folder = setup("adapters-moved");
+  const before = join(folder, "5b4923dff14fbe66", "moved-agent");
+  mkdirSync(join(folder, "5b4923dff14fbe66"), { recursive: true });
+  writeFileSync(before, "", { mode: 0o755 });
+  assert.equal(
+    findProgram("moved-agent", () => [before]),
+    before,
+  );
+  const after = join(folder, "89cd6612adc9c8d8", "moved-agent");
+  mkdirSync(join(folder, "89cd6612adc9c8d8"), { recursive: true });
+  writeFileSync(after, "", { mode: 0o755 });
+  unlinkSync(before);
+  assert.equal(
+    findProgram("moved-agent", () => [before, after]),
+    after,
   );
 });
 

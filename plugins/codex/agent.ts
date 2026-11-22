@@ -1,14 +1,46 @@
 // Codex: the user's own, installed and signed in by them. A run is a `codex exec` in the background; its thread is kept
 // on disk, so a retry or an answer can go on in it, and the link opens it in the app.
 import { execFileSync } from "node:child_process";
+import { readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { commandLine, powershell, psQuote } from "../../host/command.ts";
 import { findProgram, tail, type Adapter } from "../../worker/agents.ts";
 
 const SANDBOX = { read: "read-only", edit: "workspace-write", full: "danger-full-access" };
-export const IN_THE_APP = [
-  "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
-  "/Applications/Codex.app/Contents/Resources/codex",
-];
+
+/**
+ * The Codex the desktop app installs, for those without one of their own. On Windows every update unpacks a build into
+ * its own %LOCALAPPDATA%\OpenAI\Codex\bin\<id> folder and removes the previous one, while PATH keeps naming the folder it
+ * removed: read what is there, newest first, instead of one path the next update moves.
+ */
+export function inTheApp(): string[] {
+  const mac = [
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+    "/Applications/Codex.app/Contents/Resources/codex",
+  ];
+  const local = process.env.LOCALAPPDATA;
+  if (!local) return mac;
+  const root = join(local, "OpenAI", "Codex", "bin");
+  const entries = (() => {
+    try {
+      return readdirSync(root, { withFileTypes: true });
+    } catch {
+      // No Codex desktop install here.
+      return [];
+    }
+  })();
+  const builds: { file: string; at: number }[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const file = join(root, entry.name, "codex.exe");
+    try {
+      builds.push({ file, at: statSync(file).mtimeMs });
+    } catch {
+      // An update can remove the folder between reading this one and looking inside it.
+    }
+  }
+  return [...builds.sort((a, b) => b.at - a.at).map((build) => build.file), ...mac];
+}
 
 export default {
   command: (turn) => {
@@ -23,7 +55,7 @@ export default {
       [IO.File]::SetAccessControl($file, $acl)
     `);
     return [
-      turn.program ?? findProgram("codex", () => IN_THE_APP),
+      turn.program ?? findProgram("codex", inTheApp),
       "exec",
       ...(turn.resume ? ["resume"] : []),
       "--json",
@@ -88,7 +120,7 @@ export default {
   link: (session) => `codex://threads/${session}`,
   check(program) {
     try {
-      execFileSync(...commandLine([program ?? findProgram("codex", () => IN_THE_APP), "login", "status"]), {
+      execFileSync(...commandLine([program ?? findProgram("codex", inTheApp), "login", "status"]), {
         encoding: "utf8",
         timeout: 20_000,
         stdio: ["ignore", "pipe", "pipe"],

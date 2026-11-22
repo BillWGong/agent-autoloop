@@ -113,6 +113,9 @@ function isProgram(file: string) {
  */
 export function findProgram(name: string, elsewhere: () => string[] = () => []) {
   let program = found.get(name);
+  // An update can remove the folder it found while the worker keeps running; look again rather than fail every run
+  // until a restart.
+  if (program && !existsSync(program)) program = undefined;
   if (!program) {
     program = onPath(name) ?? (process.platform === "win32" ? null : inTerminal(name)) ?? elsewhere().find(existsSync);
     if (!program) throw new Error(`找不到 ${name}：先装好并登录`);
